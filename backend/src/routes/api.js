@@ -552,17 +552,24 @@ router.post('/chat', requireAuth, async (req, res) => {
       personal: 'Personal',
       work: 'Work / Professional', professional: 'Work / Professional'
     };
-    // Require the category word to sit directly next to "emails/mails/messages" so we don't hijack
-    // specific queries like "the job offer from Google" (that's "job offer", not "job emails").
-    const catPhrase = q.match(
-      /\b(finance|financial|jobs?|recruitment|recruiters?|hiring|notifications?|newsletters?|personal|work|professional)\s+(?:related\s+)?(?:emails?|mails?|messages?)\b/
-    );
     const catCountIntent = /\b(how many|number of|count|total)\b/.test(q);
     const catSummaryIntent =
       /\b(summari[sz]e|summary|overview|recap|gist|tl;?dr|digest|brief|rundown)\b/.test(q) ||
       /what\s+are[^?]*\babout\b/.test(q) ||
       /\b(tell|give)\b[^?]*\babout\b/.test(q);
     const catListIntent = /\b(show|list|display|view|see)\b/.test(q) || /\ball\b/.test(q) || /what\s+are/.test(q);
+
+    // Primary: category word adjacent to "emails/mails/messages" — avoids hijacking phrases like
+    // "the job offer from Google". Secondary fallback: standalone category word in a counting or
+    // listing query (e.g. "how many newsletters this week", "list my newsletters").
+    let catPhrase = q.match(
+      /\b(finance|financial|jobs?|recruitment|recruiters?|hiring|notifications?|newsletters?|personal|work|professional)\s+(?:related\s+)?(?:emails?|mails?|messages?)\b/
+    );
+    if (!catPhrase && (catCountIntent || catSummaryIntent || catListIntent)) {
+      catPhrase = q.match(
+        /\b(finance|financial|jobs?|recruitment|recruiters?|hiring|notifications?|newsletters?|personal|work|professional)\b/
+      );
+    }
 
     if (catPhrase && (catCountIntent || catSummaryIntent || catListIntent)) {
       const category = CAT_WORD_TO_CATEGORY[catPhrase[1]];
@@ -576,11 +583,17 @@ router.post('/chat', requireAuth, async (req, res) => {
       const dDays = q.match(/last\s+(\d+)\s+days/);
       const dWeeks = q.match(/last\s+(\d+)\s+weeks/);
       const dMonths = q.match(/last\s+(\d+)\s+months/);
+      const startOfWeek = () => { const d = new Date(); const off = d.getUTCDay() === 0 ? 6 : d.getUTCDay() - 1; d.setUTCDate(d.getUTCDate() - off); d.setUTCHours(0,0,0,0); return d.toISOString(); };
+      const startOfMonth = () => { const d = new Date(); d.setUTCDate(1); d.setUTCHours(0,0,0,0); return d.toISOString(); };
+      const startOfDay = () => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.toISOString(); };
       if (dDays) dateLimit = new Date(Date.now() - parseInt(dDays[1], 10) * DAY).toISOString();
       else if (dWeeks) dateLimit = new Date(Date.now() - parseInt(dWeeks[1], 10) * 7 * DAY).toISOString();
       else if (dMonths) dateLimit = new Date(Date.now() - parseInt(dMonths[1], 10) * 30 * DAY).toISOString();
       else if (/last month|past month|30 days/.test(q)) dateLimit = new Date(Date.now() - 30 * DAY).toISOString();
       else if (/last week|past week|7 days/.test(q)) dateLimit = new Date(Date.now() - 7 * DAY).toISOString();
+      else if (/this week/.test(q)) dateLimit = startOfWeek();
+      else if (/this month/.test(q)) dateLimit = startOfMonth();
+      else if (/today/.test(q)) dateLimit = startOfDay();
 
       const prettyDate = (d) =>
         d ? new Date(d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }) : 'Unknown date';
@@ -827,7 +840,7 @@ router.post('/chat', requireAuth, async (req, res) => {
     }
 
     let retrievedEmails = [];
-    const isLatestQuery = /latest\s+email|newest\s+email|most\s+recent\s+email|last\s+email\s+received/i.test(query);
+    const isLatestQuery = /latest\s+(?:email|mail|message)|newest\s+(?:email|mail|message)|most\s+recent\s+(?:email|mail|message)|last\s+(?:email|mail|message)\s+received/i.test(query);
 
     if (isLatestQuery) {
       console.log('Detected latest email query. Bypassing vector search...');
@@ -864,7 +877,10 @@ router.post('/chat', requireAuth, async (req, res) => {
         let dateLimit = null;
         const lastDaysMatch = lq.match(/last\s+(\d+)\s+days/i);
         const lastWeeksMatch = lq.match(/last\s+(\d+)\s+weeks/i);
-        
+        const startOfWeekISO = () => { const d = new Date(); const off = d.getUTCDay() === 0 ? 6 : d.getUTCDay() - 1; d.setUTCDate(d.getUTCDate() - off); d.setUTCHours(0,0,0,0); return d.toISOString(); };
+        const startOfMonthISO = () => { const d = new Date(); d.setUTCDate(1); d.setUTCHours(0,0,0,0); return d.toISOString(); };
+        const startOfDayISO = () => { const d = new Date(); d.setUTCHours(0,0,0,0); return d.toISOString(); };
+
         if (lastDaysMatch) {
           const days = parseInt(lastDaysMatch[1], 10);
           dateLimit = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
@@ -877,6 +893,12 @@ router.post('/chat', requireAuth, async (req, res) => {
           dateLimit = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
         } else if (lq.includes('yesterday')) {
           dateLimit = new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString();
+        } else if (lq.includes('this week')) {
+          dateLimit = startOfWeekISO();
+        } else if (lq.includes('this month')) {
+          dateLimit = startOfMonthISO();
+        } else if (lq.includes('today')) {
+          dateLimit = startOfDayISO();
         }
 
         return { category, dateLimit };
